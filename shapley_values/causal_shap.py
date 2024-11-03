@@ -3,17 +3,18 @@ import numpy as np
 import random
 import collections
 import math as mt
-from shapley_values.probabilities import causal_prob, conditional_prob, get_probability
+from shapley_values.probabilities import conditional_prob, get_probability
 from shapley_values.utils import get_baseline
+from shapley_values.exceptions import CausalGraphException
 from enum import Enum
 from pydantic import BaseModel
-from typing import Any
+from typing import Any, List, Dict
+
 
 random.seed(42)
 
 
 class ShapleyValuesType(Enum):
-    STANDART = 'STANDART'
     MARGINAL = 'MARGINAL'
     CONDITIONAL = 'CONDITIONAL'
     CAUSAL = 'CAUSAL'
@@ -24,31 +25,61 @@ class Explainer(BaseModel):
     model: Any
     is_classification: bool = False
     X_counter: collections.Counter = collections.Counter()
+    rounding_precision: int = 2
 
     def __init__(self, **data):
         super().__init__(**data)
-        self.X = np.round(self.X, 1)
+        self.X = np.round(self.X, self.rounding_precision)
         self.X_counter = collections.Counter(map(tuple, self.X))
 
-    def compute_shapley_values(self, sample, type=ShapleyValuesType.MARGINAL, causal_struct=None):
+    def compute_shapley_values(self, sample: List, type = ShapleyValuesType.MARGINAL, causal_struct: Dict = None):
+        """
+        Computes the attribution of each feature for a given sample using Shapley values.
+
+        Args:
+            sample (list): A list of feature values representing the input sample for which attributions are computed.
+            type (ShapleyValuesType): An enumeration value indicating the type of Shapley values to compute. 
+                Options include:
+                    - ShapleyValuesType.MARGINAL
+                    - ShapleyValuesType.CONDITIONAL
+                    - ShapleyValuesType.CAUSAL
+            causal_struct (Dict): A dictionary defining the causal structure of the model, which is essential for causal calculations.
+
+        Prints:
+            Baseline Value (E[f(X)]):
+                The average predicted value across all training samples, serving as a reference point for attributions.
+            Predicted Value (f(x)):
+                The model's predicted output for the specified sample, reflecting the influence of the features.
+            Shapley Values + Baseline Value:
+                A combined metric that merges the calculated Shapley value attributions with the expected value of the predicted outcome, providing a comprehensive view of feature contributions.
+
+        Raises:
+            CausalGraphMissedException: If the provided causal graph is incorrect or incomplete, indicating a failure to compute attributions properly.
+
+        Returns:
+            list: An array containing the attribution values for each feature, ordered according to the input sample.
+        """
+
         if type == ShapleyValuesType.CAUSAL and not causal_struct:
-            raise Exception(
+            raise CausalGraphException(
                 "Causal graph has to be provided for computing Causal Shapley Values")
+        
+        sample = np.round(sample, self.rounding_precision)
         n_features = self.X.shape[-1]
-        sample = np.round(sample, 1)
-        phis = {}
+        phis = []
         for feature in range(n_features):
             local_shap_score = self.approximate_shapley(feature, sample, type,
                                                         causal_struct)
-            phis[str(feature + 1)] = local_shap_score[0]
+            phis.append(local_shap_score[0])
 
         # Check if the sum of the Shapley values and expected value adds up to the prediction
         x = np.reshape(sample, (1, n_features))
         f_x = get_baseline(self.X, self.model)
-        print("Baseline f(x): ", f_x)
-        print("Predicted f(x): ", self.model.predict(x))
-        print("Sigma_phi + E(fX): ",
-              round(float(sum(list(phis.values())) + f_x), 3))
+
+        print("Baseline Value (E[f(X)]): ", f_x)
+        print("Predicted Value (f(x)) ", self.model.predict(x))
+        print("Shapley Values + (E[f(X)]): ",
+              round(float(sum(phis) + f_x), 3))
 
         return phis
 
@@ -111,7 +142,7 @@ class Explainer(BaseModel):
                         prob_x_hat = conditional_prob(
                             self.X_counter, x_hat, indices, indices_baseline, lenX)
                     case ShapleyValuesType.CAUSAL:
-                        prob_x_hat = 0.1  # Implementation for causal
+                        prob_x_hat = 0.1  # Implementation with do intervetions
 
                 x_hat = np.reshape(x_hat, (1, N))
                 f1 = f1 + (self.model.predict_proba(x_hat)[0][1] * prob_x_hat if self.is_classification else self.model.predict(
@@ -135,8 +166,7 @@ class Explainer(BaseModel):
                         prob_x_hat_2 = conditional_prob(
                             self.X_counter, x_hat_2, indices_2, indices_baseline_2, lenX)
                     case ShapleyValuesType.CAUSAL:
-                        prob_x_hat_2 = causal_prob(self.X_counter, x_hat_2, indices_2, indices_baseline_2, causal_struct,
-                                                   lenX)
+                        prob_x_hat_2 = 0.1 # Implementation with do intervetions
 
                 x_hat_2 = np.reshape(x_hat_2, (1, N))
                 f2 = f2 + (self.model.predict_proba(x_hat_2)[0][1] * prob_x_hat_2 if self.is_classification else self.model.predict(
