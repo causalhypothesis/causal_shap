@@ -2,37 +2,64 @@ import itertools
 import numpy as np
 import random
 import collections
-import math as mt
 from shapley_values.probabilities import conditional_prob, get_probability
-from shapley_values.utils import get_baseline
-from shapley_values.exceptions import CausalGraphException
-from enum import Enum
+from shapley_values.utils import get_baseline, ShapleyValuesType
+from shapley_values.exceptions import CausalModelException
 from pydantic import BaseModel
-from typing import Any, List, Dict
-
+from typing import Any, List
+import networkx as nx
 
 random.seed(42)
-
-
-class ShapleyValuesType(Enum):
-    MARGINAL = 'MARGINAL'
-    CONDITIONAL = 'CONDITIONAL'
-    CAUSAL = 'CAUSAL'
-
 
 class Explainer(BaseModel):
     X: Any
     model: Any
+    feature_names: list[str]
     is_classification: bool = False
     X_counter: collections.Counter = collections.Counter()
     rounding_precision: int = 2
+    
 
     def __init__(self, **data):
         super().__init__(**data)
         self.X = np.round(self.X, self.rounding_precision)
         self.X_counter = collections.Counter(map(tuple, self.X))
 
-    def compute_shapley_values(self, sample: List, type = ShapleyValuesType.MARGINAL, causal_struct: Dict = None):
+    def validate_causal_model(self, causal_model: Any) -> dict[int, list[int]]:
+        """
+        Validates if passed Causal Model is correct. Returns causal model with name of feature changed on their index. 
+
+        Raises:
+            CausalModelException: If the provided causal model is incorrect.
+
+        Returns:
+            dict[int, list[int]]: Returns causal model with name of feature changed on their index.
+        """
+
+        if not isinstance(causal_model, dict):
+            raise CausalModelException(f"Error: Causal model has to be provided as dictionary.")
+
+        element_to_index = {element: index for index, element in enumerate(self.feature_names)}
+        
+        result = {}
+        try:
+            for key, value_list in causal_model.items():
+                key_index = element_to_index[key]
+                value_indices = [element_to_index[value] for value in value_list]
+                result[key_index] = value_indices
+        except:
+            raise CausalModelException("Error: Name of features were not recognized."
+                                       "Make sure you use the same feature names you provided to Explainer.")
+
+        G = nx.DiGraph(result)
+        if not nx.is_directed_acyclic_graph(G):
+            raise CausalModelException(f"Error: Causal model has cycles.")
+        
+        return result
+        
+                
+
+    def compute_shapley_values(self, sample: List, type = ShapleyValuesType.MARGINAL, is_asymmetric = False, causal_model: dict = None):
         """
         Computes the attribution of each feature for a given sample using Shapley values.
 
@@ -43,6 +70,8 @@ class Explainer(BaseModel):
                     - ShapleyValuesType.MARGINAL
                     - ShapleyValuesType.CONDITIONAL
                     - ShapleyValuesType.CAUSAL
+
+            is_asymmetric (bool): Whether to compute Asymmetric Shapley values.
             causal_struct (Dict): A dictionary defining the causal structure of the model, which is essential for causal calculations.
 
         Prints:
@@ -59,19 +88,32 @@ class Explainer(BaseModel):
         Returns:
             list: An array containing the attribution values for each feature, ordered according to the input sample.
         """
+        f_x = get_baseline(self.X, self.model)
+        if type == ShapleyValuesType.CAUSAL:
+            if not causal_model:
+                raise CausalModelException(
+                    "Error: Causal graph has to be provided for computing Causal Shapley values")
+            else:
+                causal_model = self.validate_causal_model(causal_model)
 
-        if type == ShapleyValuesType.CAUSAL and not causal_struct:
-            raise CausalGraphException(
-                "Causal graph has to be provided for computing Causal Shapley Values")
         
+        if is_asymmetric:
+            if not causal_model:
+                raise CausalModelException(
+                    "Error: Causal graph has to be provided for computing Asymmetric Shapley values.")
+            else:
+                causal_model = self.validate_causal_model(causal_model)
+                
+
         sample = np.round(sample, self.rounding_precision)
         n_features = self.X.shape[-1]
         phis = []
         for feature in range(n_features):
             local_shap_score = self.approximate_shapley(feature, sample, type,
-                                                        causal_struct)
-            phis.append(local_shap_score[0])
-
+                                                        causal_model, is_asymmetric)
+            
+            phis.append(local_shap_score)
+        
         # Check if the sum of the Shapley values and expected value adds up to the prediction
         x = np.reshape(sample, (1, n_features))
         f_x = get_baseline(self.X, self.model)
@@ -82,29 +124,58 @@ class Explainer(BaseModel):
               round(float(sum(phis) + f_x), 3))
 
         return phis
+    
+    def get_all_parents(self, node, graph, visited=None):
+        if visited is None:
+            visited = set()
 
-    def approximate_shapley(self, xi, x, type, causal_struct=None):
+        if node in visited:
+            return []
+
+        visited.add(node)
+
+        parents = []
+        
+        for parent, children in graph.items():
+            if node in children:
+                parents.append(parent)
+                parents.extend(self.get_all_parents(parent, graph, visited))
+
+        return list(set(parents))
+
+    def follows_causal_structure(self, permutation: list[int], causal_struct: dict[int, list[int]]) -> bool:
+        for index, feature in enumerate(permutation):
+            parents = self.get_all_parents(feature, causal_struct)
+            if not set(parents).issubset(permutation[:index]):
+                return False
+
+        return True
+
+    def approximate_shapley(self, xi: int, x: list[int], type: ShapleyValuesType, causal_struct: dict[int, list[int]] = None, is_asymmetric = False):
         N = self.X.shape[-1]
-        m = mt.factorial(N)
+        m = 0
         R = list(itertools.permutations(range(N)))
         random.shuffle(R)
         score = 0
         count_negative = 0
         vf1, vf2 = 0, 0
-        for i in range(m):
-            abs_diff, f1, f2 = self.get_value(type, list(R[i]), x, causal_struct,
-                                              xi)
-
-            vf1 += f1
-            vf2 += f2
-            score += abs_diff
-            if vf2 > vf1:
-                count_negative -= 1
-            else:
-                count_negative += 1
+        for permutation in R:
+            if not is_asymmetric or (is_asymmetric and self.follows_causal_structure(permutation, causal_struct)):
+                abs_diff, f1, f2 = self.get_value(type, list(permutation), x, causal_struct,
+                                                xi)
+                m += 1
+                vf1 += f1
+                vf2 += f2
+                score += abs_diff
+                if vf2 > vf1:
+                    count_negative -= 1
+                else:
+                    count_negative += 1
         if count_negative < 0:
             score = -1 * score
+        
         return score / m
+        
 
     def get_value(self, type, permutation, x, causal_struct, xi):
         N = self.X.shape[-1]
@@ -127,8 +198,7 @@ class Explainer(BaseModel):
         for i in self.X_counter:
             X = np.asarray(i)
             for j in indices_baseline:
-                x_hat[j] = X[j]
-                x_hat_2[j] = X[j]
+                x_hat[j] = x_hat_2[j] = X[j]
 
             # No repetition
             # Eg if baseline_indices is null, it'll only run once as x_hat will stay the same over each iteration
@@ -145,8 +215,9 @@ class Explainer(BaseModel):
                         prob_x_hat = 0.1  # Implementation with do intervetions
 
                 x_hat = np.reshape(x_hat, (1, N))
-                f1 = f1 + (self.model.predict_proba(x_hat)[0][1] * prob_x_hat if self.is_classification else self.model.predict(
-                    x_hat) * prob_x_hat)
+
+                f1 = f1 + (self.model.predict_proba(x_hat)[0] * prob_x_hat if self.is_classification else self.model.predict(
+                    x_hat)[0] * prob_x_hat)
 
             # xi index will be given to baseline for f2
             x_hat_2[xi] = X[xi]
@@ -170,10 +241,12 @@ class Explainer(BaseModel):
 
                 x_hat_2 = np.reshape(x_hat_2, (1, N))
                 f2 = f2 + (self.model.predict_proba(x_hat_2)[0][1] * prob_x_hat_2 if self.is_classification else self.model.predict(
-                    x_hat_2) * prob_x_hat_2)
+                    x_hat_2)[0] * prob_x_hat_2)
 
             x_hat = np.squeeze(x_hat)
             x_hat_2 = np.squeeze(x_hat_2)
         absolute_diff = abs(f1 - f2)
-
         return absolute_diff, f1, f2
+
+
+# Some of the code sample are taken from https://github.com/saifkhanali9/causal-shapley

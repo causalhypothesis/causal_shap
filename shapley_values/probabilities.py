@@ -18,5 +18,3 @@ def conditional_prob(unique_count, x_hat, indices, indices_baseline, n):
     numerator = get_probability(unique_count, x_hat, numerator_indices, n)
     denominator = get_probability(unique_count, x_hat, indices, n)
     return  numerator / (denominator + 1e-7)
-
-

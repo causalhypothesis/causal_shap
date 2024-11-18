@@ -1,6 +1,6 @@
-class CausalGraphException(Exception):
+class CausalModelException(Exception):
     """
-    Exception raised when a causal graph is not properly defined or is missing.
+    Exception raised when a causal model is not properly defined.
     
     Attributes:
         message (str): Explanation of the error.
