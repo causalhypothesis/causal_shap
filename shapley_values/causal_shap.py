@@ -18,7 +18,6 @@ class Explainer(BaseModel):
     is_classification: bool = False
     X_counter: collections.Counter = collections.Counter()
     rounding_precision: int = 2
-    
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -47,9 +46,9 @@ class Explainer(BaseModel):
                 key_index = element_to_index[key]
                 value_indices = [element_to_index[value] for value in value_list]
                 result[key_index] = value_indices
-        except:
+        except Exception as e:
             raise CausalModelException("Error: Name of features were not recognized."
-                                       "Make sure you use the same feature names you provided to Explainer.")
+                                       f"Make sure you use the same feature names you provided to Explainer. {e}")
 
         G = nx.DiGraph(result)
         if not nx.is_directed_acyclic_graph(G):
