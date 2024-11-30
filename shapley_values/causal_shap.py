@@ -166,15 +166,12 @@ class Explainer(BaseModel):
                 vf1 += f1
                 vf2 += f2
                 score += abs_diff
-                if vf2 > vf1:
-                    count_negative -= 1
-                else:
-                    count_negative += 1
+
         if count_negative < 0:
             score = -1 * score
         
         return score / m
-        
+
 
     def get_value(self, type, permutation, x, causal_struct, xi):
         N = self.X.shape[-1]
@@ -244,7 +241,7 @@ class Explainer(BaseModel):
 
             x_hat = np.squeeze(x_hat)
             x_hat_2 = np.squeeze(x_hat_2)
-        absolute_diff = abs(f1 - f2)
+        absolute_diff = f1 - f2
         return absolute_diff, f1, f2
 
 

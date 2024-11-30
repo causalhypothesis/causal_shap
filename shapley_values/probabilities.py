@@ -14,7 +14,30 @@ def get_probability(unique_count, x_hat, indices_baseline, n):
     return count / n
 
 def conditional_prob(unique_count, x_hat, indices, indices_baseline, n):
+    if len(indices) == 0:
+        return get_probability(unique_count, x_hat, indices_baseline, n)
+
     numerator_indices = indices + indices_baseline
     numerator = get_probability(unique_count, x_hat, numerator_indices, n)
     denominator = get_probability(unique_count, x_hat, indices, n)
-    return  numerator / (denominator + 1e-7)
+    return  (numerator / (denominator + 1e-7))
+
+def causal_prob(unique_count, x_hat, indices, indices_baseline, lenX, causal_struct: list[list], confounding):
+    
+    in_coalition = set(indices)
+    out_coalition = set(indices_baseline)
+
+    prob = 1
+    for index, component in enumerate(causal_struct):
+
+        current_component = set(component)
+        to_sample = list(current_component & out_coalition)
+        if len(to_sample) > 0:
+            parents = set([element for component1 in causal_struct[:index] for element in component1])
+            if not confounding[index]:
+                to_be_conditioned = (parents & out_coalition) | (parents & in_coalition) | (current_component & in_coalition)
+            if len(to_be_conditioned) == 0:
+                prob *= get_probability(unique_count, x_hat, list(to_sample), lenX)
+            else:
+                prob *= conditional_prob(unique_count, x_hat, list(to_be_conditioned), list(to_sample), lenX)
+    return prob
